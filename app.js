@@ -494,7 +494,7 @@ function showEditDialog(rowData) {
         });
 
         // 设置标题
-        const isEdit = rowData !== null;
+        const isEdit = rowData !== null && rowData !== undefined;
         document.getElementById('modalTitle').textContent = isEdit ? '修改记录' : '插入新记录';
         const subtitle = document.getElementById('modalSubtitle');
         if (isEdit) {
@@ -505,7 +505,11 @@ function showEditDialog(rowData) {
 
         // 构建表单
         const modalBody = document.getElementById('modalBody');
-        modalBody.innerHTML = '<div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-5">';
+        modalBody.innerHTML = ''; // 清空内容
+        
+        // 创建容器 div
+        const container = document.createElement('div');
+        container.className = 'grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-5';
 
         currentTableColumns.forEach(colName => {
             const info = colInfo[colName] || {};
@@ -531,9 +535,15 @@ function showEditDialog(rowData) {
             input.name = colName;
             input.placeholder = info.notNull ? '必填字段' : 'NULL';
             
-            if (rowData && rowData[colName] !== null && rowData[colName] !== undefined) {
-                input.value = String(rowData[colName]);
-            } else if (info.defaultValue !== null) {
+            // 填充数据：编辑模式时填充行数据，新增模式时使用默认值
+            if (rowData !== null && rowData !== undefined && typeof rowData === 'object') {
+                // 编辑模式：填充该行的所有字段值
+                if (colName in rowData) {
+                    const value = rowData[colName];
+                    input.value = value === null || value === undefined ? '' : String(value);
+                }
+            } else if (info.defaultValue !== null && info.defaultValue !== undefined) {
+                // 新增模式：使用默认值
                 input.value = String(info.defaultValue);
             }
 
@@ -546,10 +556,11 @@ function showEditDialog(rowData) {
                 field.appendChild(error);
             }
 
-            modalBody.querySelector('div').appendChild(field);
+            container.appendChild(field);
         });
 
-        modalBody.innerHTML += '</div>';
+        // 将容器添加到 modalBody
+        modalBody.appendChild(container);
 
         document.getElementById('editModal').style.display = 'flex';
     } catch (error) {
