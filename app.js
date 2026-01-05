@@ -7,6 +7,9 @@ let currentTableColumns = [];
 let currentTablePk = [];
 let allTables = [];
 let tableSearchQuery = '';
+let fileHandle = null; // 文件句柄，用于直接保存
+let supportsFileSystemAccess = 'showOpenFilePicker' in window; // 检测浏览器是否支持 File System Access API
+let currentEditingRow = null; // 当前正在编辑的行数据（null 表示插入新行）
 
 // 等待 SQL.js 加载
 initSqlJs({
@@ -27,6 +30,12 @@ function setupEventListeners() {
 
     // 导出数据库
     document.getElementById('exportDbBtn').addEventListener('click', exportDatabase);
+
+    // 保存到原文件
+    const saveDbBtn = document.getElementById('saveDbBtn');
+    if (saveDbBtn) {
+        saveDbBtn.addEventListener('click', saveToOriginalFile);
+    }
 
     // 拖拽功能
     const dropZone = document.getElementById('dropZone');
@@ -108,10 +117,36 @@ function preventDefaults(e) {
 }
 
 // 处理文件选择
-function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (file) {
-        loadDatabase(file);
+async function handleFileSelect(e) {
+    // 如果支持 File System Access API，使用新方法
+    if (supportsFileSystemAccess && e.type === 'click') {
+        try {
+            const [handle] = await window.showOpenFilePicker({
+                types: [{
+                    description: 'SQLite 数据库文件',
+                    accept: {
+                        'application/x-sqlite3': ['.db', '.sqlite', '.sqlite3']
+                    }
+                }],
+                multiple: false
+            });
+
+            fileHandle = handle; // 保存文件句柄
+            const file = await handle.getFile();
+            loadDatabase(file);
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('打开文件失败:', error);
+                showToast('打开文件失败: ' + error.message, 'error');
+            }
+        }
+    } else {
+        // 降级到传统文件选择
+        const file = e.target.files[0];
+        if (file) {
+            fileHandle = null; // 传统方式无法获得文件句柄
+            loadDatabase(file);
+        }
     }
 }
 
@@ -145,6 +180,12 @@ async function loadDatabase(file) {
         document.getElementById('exportDbBtn').style.display = 'flex';
         document.getElementById('openFileLabel').style.display = 'flex';
 
+        // 只有当有文件句柄时才显示保存按钮
+        const saveDbBtn = document.getElementById('saveDbBtn');
+        if (saveDbBtn) {
+            saveDbBtn.style.display = fileHandle ? 'flex' : 'none';
+        }
+
         refreshTables();
         showToast('数据库加载成功', 'success');
     } catch (error) {
@@ -176,7 +217,7 @@ function renderTableList() {
     const tableList = document.getElementById('tableList');
     tableList.innerHTML = '';
 
-    const filteredTables = allTables.filter(t => 
+    const filteredTables = allTables.filter(t =>
         t.name.toLowerCase().includes(tableSearchQuery.toLowerCase())
     );
 
@@ -195,11 +236,10 @@ function renderTableList() {
     filteredTables.forEach(table => {
         const isActive = currentTable === table.name;
         const button = document.createElement('button');
-        button.className = `w-full text-left px-3 py-2.5 rounded-md flex items-center justify-between transition group ${
-            isActive 
-                ? 'bg-blue-50 text-blue-700 font-bold border-l-4 border-blue-600' 
-                : 'text-gray-600 hover:bg-white hover:shadow-sm'
-        }`;
+        button.className = `w-full text-left px-3 py-2.5 rounded-md flex items-center justify-between transition group ${isActive
+            ? 'bg-blue-50 text-blue-700 font-bold border-l-4 border-blue-600'
+            : 'text-gray-600 hover:bg-white hover:shadow-sm'
+            }`;
         button.innerHTML = `
             <div class="flex items-center overflow-hidden">
                 <i class="fas fa-table w-4 h-4 mr-2 flex-shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-400'}"></i>
@@ -255,7 +295,7 @@ function selectTable(tableName) {
 
     // 切换到数据标签页
     switchTab('data');
-    
+
     // 重新渲染表列表以更新选中状态
     renderTableList();
 }
@@ -374,7 +414,7 @@ function loadTableData(tableName, limit = 100) {
             tr.innerHTML = `
                 <td class="px-4 py-3.5 text-xs text-gray-300 font-bold text-center select-none">${index + 1}</td>
             `;
-            
+
             row.forEach((cell, colIndex) => {
                 const td = document.createElement('td');
                 td.className = 'px-5 py-3.5 text-gray-600 border-r border-gray-50 last:border-0 truncate max-w-xs font-medium';
@@ -402,7 +442,7 @@ function loadTableData(tableName, limit = 100) {
                     </button>
                 </div>
             `;
-            
+
             actionTd.querySelector('.edit-row-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 showEditDialog(rowObj);
@@ -411,16 +451,16 @@ function loadTableData(tableName, limit = 100) {
                 e.stopPropagation();
                 deleteRow(rowObj);
             });
-            
+
             tr.appendChild(actionTd);
             tr.addEventListener('dblclick', () => showEditDialog(rowObj));
-            
+
             // 右键菜单
             tr.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 showContextMenu(e, rowObj);
             });
-            
+
             tableBody.appendChild(tr);
         });
     } catch (error) {
@@ -482,6 +522,9 @@ function showEditDialog(rowData) {
     if (!currentTable) return;
 
     try {
+        // 保存当前编辑的行数据（用于在 saveRowData 中判断是插入还是编辑）
+        currentEditingRow = rowData;
+
         // 获取表结构
         const result = db.exec(`PRAGMA table_info(${escapeTableName(currentTable)})`);
         if (result.length === 0) return;
@@ -506,7 +549,7 @@ function showEditDialog(rowData) {
         // 构建表单
         const modalBody = document.getElementById('modalBody');
         modalBody.innerHTML = ''; // 清空内容
-        
+
         // 创建容器 div
         const container = document.createElement('div');
         container.className = 'grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-5';
@@ -529,12 +572,11 @@ function showEditDialog(rowData) {
 
             const input = document.createElement('input');
             input.type = 'text';
-            input.className = `w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-transparent outline-none transition-all text-sm font-medium ${
-                info.pk ? 'bg-blue-50/30 border-blue-100' : 'group-hover:border-gray-300'
-            }`;
+            input.className = `w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-transparent outline-none transition-all text-sm font-medium ${info.pk ? 'bg-blue-50/30 border-blue-100' : 'group-hover:border-gray-300'
+                }`;
             input.name = colName;
             input.placeholder = info.notNull ? '必填字段' : 'NULL';
-            
+
             // 填充数据：编辑模式时填充行数据，新增模式时使用默认值
             if (rowData !== null && rowData !== undefined && typeof rowData === 'object') {
                 // 编辑模式：填充该行的所有字段值
@@ -611,12 +653,9 @@ function saveRowData() {
             }
         });
 
-        const selectedRow = document.querySelector('#dataTableBody tr[data-row-index]');
-        const isEdit = selectedRow !== null && Object.keys(formData).length > 0;
-        const oldRowData = isEdit ? currentTableData.find((r, i) => {
-            const rowIndex = parseInt(selectedRow.dataset.rowIndex);
-            return i === rowIndex;
-        }) : null;
+        // 使用 currentEditingRow 判断是编辑还是插入
+        const isEdit = currentEditingRow !== null && currentEditingRow !== undefined;
+        const oldRowData = isEdit ? currentEditingRow : null;
 
         if (isEdit && oldRowData) {
             // 更新行
@@ -642,14 +681,14 @@ function saveRowData() {
                 // 主键改变，需要先删除再插入
                 const deleteQuery = `DELETE FROM ${escapeTableName(currentTable)} WHERE ${whereConditions}`;
                 db.run(deleteQuery, whereValues);
-                
+
                 // 插入新行
                 const columns = Object.keys(formData).map(k => escapeTableName(k)).join(', ');
                 const placeholders = Object.keys(formData).map(() => '?').join(', ');
                 const values = Object.values(formData);
                 const insertQuery = `INSERT INTO ${escapeTableName(currentTable)} (${columns}) VALUES (${placeholders})`;
                 db.run(insertQuery, values);
-                
+
                 showToast('行已更新（主键值已更改）', 'success');
             } else {
                 // 更新非主键字段
@@ -741,7 +780,7 @@ function showContextMenu(e, rowData) {
     // 绑定菜单项点击事件
     const editBtn = contextMenu.querySelector('.context-menu-item:first-child');
     const deleteBtn = contextMenu.querySelector('.context-menu-item:last-child');
-    
+
     // 移除旧的事件监听器（通过克隆节点）
     const newEditBtn = editBtn.cloneNode(true);
     const newDeleteBtn = deleteBtn.cloneNode(true);
@@ -823,6 +862,51 @@ function exportDatabase() {
     }
 }
 
+// 保存到原文件
+async function saveToOriginalFile() {
+    if (!db) {
+        showToast('没有打开的数据库', 'warning');
+        return;
+    }
+
+    if (!fileHandle) {
+        showToast('无法保存到原文件，请使用导出功能', 'warning');
+        return;
+    }
+
+    if (!supportsFileSystemAccess) {
+        showToast('您的浏览器不支持直接保存，请使用导出功能', 'warning');
+        return;
+    }
+
+    try {
+        showLoading(true);
+
+        // 导出数据库数据
+        const data = db.export();
+
+        // 创建可写流
+        const writable = await fileHandle.createWritable();
+
+        // 写入数据
+        await writable.write(data);
+
+        // 关闭文件
+        await writable.close();
+
+        showToast('数据库已成功保存到原文件', 'success');
+    } catch (error) {
+        console.error('保存数据库失败:', error);
+        if (error.name === 'NotAllowedError') {
+            showError('保存失败: 没有文件写入权限');
+        } else {
+            showError('保存数据库失败: ' + error.message);
+        }
+    } finally {
+        showLoading(false);
+    }
+}
+
 // 显示错误
 function showError(message) {
     const errorDisplay = document.getElementById('errorDisplay');
@@ -843,7 +927,7 @@ function showToast(message, type = 'info') {
         warning: 'bg-amber-600',
         info: 'bg-blue-600'
     };
-    
+
     toast.className = `${colors[type] || colors.info} text-white px-6 py-3 rounded-lg shadow-lg mb-4 animate-in fade-in slide-in-from-bottom-4`;
     toast.textContent = message;
     toast.style.display = 'block';
